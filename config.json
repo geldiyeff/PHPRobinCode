@@ -1,0 +1,30 @@
+{
+    "author": "Dovletmammet Geldiyev",
+    "license": "MIT License",
+    "version": "1.0",
+    "project": "phpRobinCode",
+    "linkTypes": {
+        "a": "href",
+        "link": "href",
+        "script": "src",
+        "img": "src",
+        "source": "src",
+        "object": "data",
+        "video": "src",
+        "audio": "src"
+    },
+    "blockNames": [
+        "mailto:",
+        "tel:",
+        "javascript:",
+        "+",
+        "#",
+        "'",
+        "http:",
+        "https:",
+        " ",
+        "?",
+        "{href}",
+        "email-protection"
+    ]
+}
