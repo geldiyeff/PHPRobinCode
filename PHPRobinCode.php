@@ -1,146 +1,240 @@
 <?php
 
+namespace Geldiyeff\PHPRobincode;
+
+error_reporting(0);
+
+use Exception;
+use DOMDocument;
+use InvalidArgumentException;
+
+/**
+ * Class PHPRobinCode
+ *
+ * A utility class for recursively downloading web pages and their local links
+ * based on specified configuration settings.
+ */
 class PHPRobinCode
 {
-    private $url; // The URL of the website to be downloaded
-    private $config; // Configuration settings loaded from 'config.json'
-    private $templateDir; // Directory where downloaded files are stored
-    private $fileName = []; // Queue of file names to be downloaded
-    private $downloadedPages = []; // List of successfully downloaded pages
-    private $couldntDownloadPages = []; // List of pages that couldn't be downloaded
+    const CONFIG_FILE = 'config.json';
+    const TEMPLATES_DIR = 'templates';
 
+    private string $templateDir;
+    private string $url;
+    private string $domain;
+    private string $fileURL;
+    private array $config;
+    private array $files = [];
+    private array $executedFiles = [];
+
+    /**
+     * PHPRobinCode constructor.
+     *
+     * Initializes the PHPRobinCode instance, loads configuration settings,
+     * prompts the user for a website URL, and sets up initial parameters.
+     */
     public function __construct()
     {
-        $this->config = $this->loadConfig('config.json'); // Load configuration settings
-
-        $this->url = $this->getUserInput('Enter the URL of the website: '); // Get user input for the website URL
-
-        $this->templateDir = "templates/" . parse_url($this->url, PHP_URL_HOST); // Create a directory based on the host name
-
-        $this->run(); // Start the downloading process
-
-        echo "Done!\n"; // Display a completion message
+        $this->config = $this->loadJson(self::CONFIG_FILE);
+        $this->url = $this->getUserInput('Enter the URL of the website: ');
+        $this->domain = parse_url($this->url, PHP_URL_HOST);
+        $this->templateDir = self::TEMPLATES_DIR . '/' . $this->domain . '/';
+        $this->files[] = $this->url;
+        $this->run();
+        echo "Done!\n";
     }
 
-    public function run()
+    /**
+     * Initiates the recursive process of downloading files and extracting links.
+     *
+     * @return void
+     */
+    public function run(): void
     {
-        $path = parse_url($this->url, PHP_URL_PATH);
-        $file = basename($path);
+        while (!empty($this->files)) {
+            $file = array_shift($this->files);
+            $this->fileURL = dirname($file) . '/';
+            $this->executedFiles[] = $file;
+            $this->getLinks($file);
 
-        if (!empty($file)) {
-            $this->url = str_replace($file, '', $this->url);
-            array_push($this->fileName, $file); // Add the initial file to the download queue
-        } else {
-            array_push($this->fileName, "index.html"); // Use "index.html" as the default file if no file is specified in the URL
-        }
-
-        while (!empty($this->fileName)) {
-            $file = array_shift($this->fileName);
-            $this->downloadPage($this->url . $file, $this->templateDir . '/' . $file);
-        }
-
-        if (!file_exists($this->templateDir . "/README.txt")) {
-            $this->createReadmeFile($this->url);
-        }
-    }
-
-    private function downloadPage($url, $filePath)
-    {
-        $this->createDirectory(dirname($filePath));
-        if (strpos($filePath, '.') === false) {
-            $filePath .= ".html";
-        }
-        if (!file_exists($filePath)) {
-            if (file_put_contents($filePath, file_get_contents($url))) {
-                echo "\033[0;32m$url\033[0m\n"; // Display a success message in green
-                array_push($this->downloadedPages, $filePath); // Add the downloaded page to the list
-                $this->getLinks($filePath); // Extract links from the downloaded page
+            if ($this->downloadFile($file)) {
+                $msg = "\033[0;32m{%url%}\033[0m\n";
             } else {
-                echo "\033[0;31m$url\033[0m\n"; // Display a failure message in red
-                array_push($this->couldntDownloadPages, $filePath); // Add the failed page to the list
+                $msg = "\033[0;31m{%url%}\033[0m\n";
             }
+            echo str_replace('{%url%}', $file, $msg);
+        }
+
+        $this->createReadMeFile($this->url, $this->templateDir);
+    }
+
+
+    /**
+     * Downloads a file from a given URL and saves it based on the specified rules.
+     *
+     * @param string $url The URL of the file to be downloaded.
+     * @return bool Returns true on successful download, false otherwise.
+     * @throws InvalidArgumentException if the URL or file path is invalid.
+     */
+    private function downloadFile(string $url): bool
+    {
+        // Validation
+        if (!isset($this->url) || empty($url)) {
+            throw new InvalidArgumentException("Invalid URL or file path.");
+        }
+
+        // Set up directory structure
+        $dir = dirname(parse_url($url, PHP_URL_PATH));
+        $dir = $this->templateDir . $dir;
+
+        if (!is_dir($dir)) {
+            mkdir($dir, 0777, true);
+        }
+
+        // Set up file name
+        $fileName = basename($url);
+
+        if ($fileName === $this->domain) {
+            $fileName = 'index.html';
+        } elseif (pathinfo($fileName, PATHINFO_EXTENSION) === '') {
+            $fileName .= '.html';
+        }
+
+        // Download and save the file
+        $file = file_get_contents($url);
+
+        if ($file === false) {
+            return false;
+        } else {
+            $this->saveFile($dir . '/' . $fileName, $file);
+            return true;
         }
     }
 
-    private function createDirectory($directory)
+    /**
+     * Extracts links from a given HTML file based on specified tag and attribute settings.
+     *
+     * @param string $file The path to the HTML file.
+     */
+    private function getLinks(string $file): void
     {
-        $parts = explode("/", $directory);
-        $path = "";
+        $dom = new DOMDocument();
+        @$dom->loadHTMLFile($file);
 
-        foreach ($parts as $part) {
-            $path .= $part . "/";
-            if (!file_exists($path)) {
-                mkdir($path, 0777, true); // Create directories as needed with full permissions
-            }
-        }
-    }
+        foreach ($this->config['linkTypes'] as $tag => $attr) {
+            foreach ($dom->getElementsByTagName($tag) as $element) {
+                $link = $element->getAttribute($attr);
 
-    private function getLinks($file)
-    {
-        $dom = new DOMDocument;
-        @$dom->loadHTML(file_get_contents($file));
-
-        foreach ($this->config['linkTypes'] as $tag => $attribute) {
-            $elements = $dom->getElementsByTagName($tag);
-            foreach ($elements as $element) {
-                $link = $element->getAttribute($attribute);
-                if (!in_array($link, $this->downloadedPages) && !in_array($link, $this->fileName) && $this->isValidLink($link) && !in_array($link, $this->couldntDownloadPages)) {
-                    array_push($this->fileName, $link); // Add valid links to the download queue
+                if ($this->isLocalLink($link) && !in_array($link, $this->files) && !$this->excludedLink($link) && !in_array($link, $this->executedFiles)) {
+                    $this->files[] = $link;
                 }
             }
         }
     }
 
-    private function isValidLink($link): bool
+
+    /**
+     * Checks if a given link is local or external.
+     *
+     * @param string $link The link to be checked.
+     * @return bool Returns true if the link is local, false if it's external.
+     */
+    private function isLocalLink(string &$link): bool
     {
-        foreach ($this->config["blockNames"] as $blockName) {
-            if (strpos($link, $blockName) !== false) {
-                return false; // Check if the link contains any blocked names
-            }
-        }
-
-        return true;
-    }
-
-    private function createReadmeFile($url)
-    {
-        $readmeContent = "/*\n\n";
-        $readmeContent .= "@author: " . $this->config['author'] . "\n";
-        $readmeContent .= "@license: " . $this->config['license'] . "\n";
-        $readmeContent .= "@version: " . $this->config['version'] . "\n";
-        $readmeContent .= "@project: " . $this->config['project'] . "\n\n";
-        $readmeContent .= "Web Site URL: $url\n";
-        $readmeContent .= "*/\n";
-
-        file_put_contents($this->templateDir . "/README.txt", $readmeContent); // Create a README.txt file with project information
-    }
-
-    private function loadConfig($path): ?array
-    {
-        if (file_exists($path)) {
-            $config = json_decode(file_get_contents($path), true);
-            if ($config === null) {
-                throw new Exception("Invalid JSON in config file"); // Handle invalid JSON in the config file
-            }
-            return $config;
+        if (!preg_match('/^http[s]?:\/\//', $link)) {
+            $link = $this->fileURL . $link;
+            return true;
         } else {
-            throw new Exception("Config file not found"); // Handle missing config file
+            return (parse_url($link, PHP_URL_HOST) === $this->domain) ? true : false;
         }
     }
 
-    private function getUserInput($msg): string
+    /**
+     * Checks if a given link is excluded based on the configuration settings.
+     *
+     * @param string $link The link to be checked.
+     * @return bool Returns true if the link should be excluded, false otherwise.
+     */
+    private function excludedLink(string $link): bool
     {
-        echo $msg;
+        foreach ($this->config['excludedLinks'] as $excludedLink) {
+            if (strpos($link, $excludedLink) !== false || empty($link)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Loads a JSON file and returns its content as an associative array.
+     *
+     * @param string $filePath The path to the JSON file.
+     * @return array|null Returns the content of the JSON file as an associative array.
+     * @throws Exception if the JSON file is invalid or not found.
+     */
+    private function loadJson(string $filePath): ?array
+    {
+        if (file_exists($filePath)) {
+            $json = json_decode(file_get_contents($filePath), true);
+            if ($json === null) {
+                throw new Exception('Invalid JSON file.');
+            }
+            return $json;
+        } else {
+            throw new Exception('File not found.');
+        }
+    }
+
+    /**
+     * Saves content to a file.
+     *
+     * @param string $fileName The name of the file to be saved.
+     * @param string $content The content to be saved.
+     * @throws Exception if there is an error creating the file.
+     */
+    private function saveFile(string $fileName, string $content): bool
+    {
+        return (file_put_contents($fileName, $content) === false) ? false : true;
+    }
+
+    /**
+     * Prompts the user for input and validates the entered URL.
+     *
+     * @param string $message The message to be displayed to the user.
+     * @return string Returns a valid URL entered by the user.
+     */
+    private function getUserInput(string $message): string
+    {
+        echo $message;
         $url = trim(fgets(STDIN));
 
         if (!filter_var($url, FILTER_VALIDATE_URL)) {
-            echo "Invalid URL\n"; // Display an error message for an invalid URL
-            return (string) $this->getUserInput($msg); // Recursively ask for a valid URL
+            echo 'Invalid URL. Please enter a valid URL.' . PHP_EOL;
+            return (string) $this->getUserInput($message);
         } else {
-            return (string) $url;
+            return $url;
         }
+    }
+
+
+    /**
+     * Creates a README file for the project with essential information.
+     *
+     * @param string $url The URL of the website being processed.
+     * @return void
+     */
+    private function createReadMeFile(string $url, string $path): void
+    {
+        $content = "/*\n\n";
+        $content .= "@author: " . $this->config["author"] . "\n";
+        $content .= "@license: " . $this->config['license'] . "\n";
+        $content .= "@version: " . $this->config['version'] . "\n";
+        $content .= "@project: " . $this->config['project'] . "\n\n";
+        $content .= "Web Site URL: $url\n";
+        $content .= "*/\n";
+
+        $this->saveFile($path . 'README.md', $content);
     }
 }
 
-// Start the application
 new PHPRobinCode();
